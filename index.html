@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+  <title>Tower Cropper</title>
+  <style>
+    :root {
+      --primary: #0af;
+      --bg: #121212;
+      --panel: #1e1e1e;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: #eee;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      padding: 10px;
+      box-sizing: border-box;
+      overflow-x: hidden;
+    }
+
+    h1 { margin: 10px 0; font-size: 1.2rem; color: var(--primary); }
+
+    .controls {
+      background: var(--panel);
+      padding: 12px;
+      border-radius: 12px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin-bottom: 15px;
+      width: 100%;
+      max-width: 500px;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+    }
+
+    button, input[type="file"]::file-selector-button {
+      padding: 8px 14px;
+      font-size: 0.85rem;
+      background: #333;
+      color: white;
+      border: 1px solid #444;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    #btnCrop { background: #005a87; border-color: var(--primary); }
+
+    .crop-container {
+      height: 75vh;
+      aspect-ratio: 960 / 2160;
+      position: relative;
+      border: 2px solid var(--primary);
+      background-color: #000;
+      touch-action: none;
+      overflow: hidden;
+      cursor: pointer;
+    }
+
+    canvas { width: 100%; height: 100%; display: block; }
+
+    .legend {
+      display: flex;
+      gap: 15px;
+      margin-bottom: 8px;
+      font-size: 0.75rem;
+      justify-content: center;
+    }
+    .legend-item { display: flex; align-items: center; gap: 4px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; }
+  </style>
+</head>
+<body>
+
+  <h1>Tower Cropper (Studio E)</h1>
+
+  <div class="controls">
+    <input type="file" id="fileInput" accept="image/*" style="display:none" />
+    <button onclick="document.getElementById('fileInput').click()">Load Image</button>
+    <button id="btnReset">Reset</button>
+    <button id="btnCrop">Export JPG</button>
+  </div>
+
+  <div class="legend">
+    <div class="legend-item"><span class="dot" style="background: red;"></span> 14% / 91.5%</div>
+    <div class="legend-item"><span class="dot" style="background: lime;"></span> 18% / 84%</div>
+  </div>
+
+  <div class="crop-container" id="dropZone">
+    <canvas id="canvas-layer"></canvas>
+  </div>
+
+<script>
+const canvas = document.getElementById('canvas-layer');
+const ctx = canvas.getContext('2d');
+const fileInput = document.getElementById('fileInput');
+const btnCrop = document.getElementById('btnCrop');
+const btnReset = document.getElementById('btnReset');
+const dropZone = document.getElementById('dropZone');
+
+const CROP_W = 960;
+const CROP_H = 2160;
+
+let scale = 1;
+let offsetX = 0;
+let offsetY = 0;
+let isDragging = false;
+let hasMoved = false;
+let startX, startY;
+let img = null;
+let currentURL = null;
+let lastPinchDist = -1;
+
+function init() {
+  canvas.width = CROP_W;
+  canvas.height = CROP_H;
+  render(true);
+}
+
+dropZone.onclick = () => {
+  if (!img || !hasMoved) fileInput.click();
+};
+
+function getInternalCoords(e) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+  return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+}
+
+fileInput.onchange = e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  if (currentURL) URL.revokeObjectURL(currentURL);
+  currentURL = URL.createObjectURL(file);
+  img = new Image();
+  img.onload = () => {
+    scale = Math.max(CROP_W / img.width, CROP_H / img.height);
+    offsetX = (CROP_W - img.width * scale) / 2;
+    offsetY = (CROP_H - img.height * scale) / 2;
+    render(true);
+  };
+  img.src = currentURL;
+};
+
+function render(showGuides = true) {
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  
+  if (!img) {
+    ctx.fillStyle = "#888";
+    ctx.font = "bold 50px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("TAP TO LOAD IMAGE", CROP_W/2, CROP_H/2);
+    return;
+  }
+
+  ctx.save();
+  ctx.translate(offsetX, offsetY);
+  ctx.scale(scale, scale);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, 0, 0);
+  ctx.restore();
+
+  if (showGuides) {
+    drawSafeZones();
+    const lines = [
+      { p: 0.14, c: 'red' },  { p: 0.915, c: 'red' },
+      { p: 0.18, c: 'lime' }, { p: 0.84, c: 'lime' }
+    ];
+    ctx.lineWidth = 5;
+    lines.forEach(l => {
+      const y = CROP_H * l.p;
+      ctx.beginPath();
+      ctx.strokeStyle = l.c;
+      ctx.moveTo(0, y); ctx.lineTo(CROP_W, y);
+      ctx.stroke();
+    });
+  }
+}
+
+function drawSafeZones() {
+    const redTop = CROP_H * 0.14;
+    const greenTop = CROP_H * 0.18;
+    const greenBottom = CROP_H * 0.84;
+    const redBottom = CROP_H * 0.915;
+    const paddingRight = 30;
+
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    ctx.font = "bold 32px sans-serif"; 
+
+    // --- TOP AREAS ---
+    ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+    ctx.fillRect(0, 0, CROP_W, redTop);
+    ctx.fillStyle = "white";
+    ctx.fillText("NOT SEEN", CROP_W - paddingRight, redTop / 2);
+
+    ctx.fillStyle = "rgba(0, 0, 0, 0.2)";
+    ctx.fillRect(0, redTop, CROP_W, greenTop - redTop);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+    ctx.fillText("MOVE START", CROP_W - paddingRight, redTop + (greenTop - redTop) / 2);
+
+    // --- BOTTOM AREAS ---
+    ctx.fillStyle = "rgba(0, 0, 0, 0.2)";
+    ctx.fillRect(0, greenBottom, CROP_W, redBottom - greenBottom);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+    ctx.fillText("MOVE START", CROP_W - paddingRight, greenBottom + (redBottom - greenBottom) / 2);
+
+    ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+    ctx.fillRect(0, redBottom, CROP_W, CROP_H - redBottom);
+    ctx.fillStyle = "white";
+    ctx.fillText("NOT SEEN", CROP_W - paddingRight, redBottom + (CROP_H - redBottom) / 2);
+}
+
+canvas.onpointerdown = e => {
+  if (!img) return; 
+  isDragging = true;
+  hasMoved = false;
+  canvas.setPointerCapture(e.pointerId);
+  const pos = getInternalCoords(e);
+  startX = pos.x - offsetX;
+  startY = pos.y - offsetY;
+};
+
+canvas.onpointermove = e => {
+  if (!isDragging || (e.pointerType === 'touch' && lastPinchDist !== -1)) return;
+  hasMoved = true;
+  const pos = getInternalCoords(e);
+  offsetX = pos.x - startX;
+  offsetY = pos.y - startY;
+  render(true);
+};
+
+canvas.onpointerup = () => isDragging = false;
+
+canvas.addEventListener('wheel', e => {
+  if (!img) return;
+  e.preventDefault();
+  const pos = getInternalCoords(e);
+  const zoomFactor = Math.pow(0.999, e.deltaY);
+  const newScale = scale * zoomFactor;
+  offsetX = pos.x - (pos.x - offsetX) * (newScale / scale);
+  offsetY = pos.y - (pos.y - offsetY) * (newScale / scale);
+  scale = newScale;
+  render(true);
+}, { passive: false });
+
+canvas.addEventListener('touchmove', e => {
+  if (img && e.touches.length === 2) {
+    e.preventDefault();
+    hasMoved = true;
+    const t1 = e.touches[0];
+    const t2 = e.touches[1];
+    const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+    if (lastPinchDist > 0) {
+      const ratio = dist / lastPinchDist;
+      const rect = canvas.getBoundingClientRect();
+      const sX = canvas.width / rect.width;
+      const sY = canvas.height / rect.height;
+      const cx = ((t1.clientX + t2.clientX)/2 - rect.left) * sX;
+      const cy = ((t1.clientY + t2.clientY)/2 - rect.top) * sY;
+      offsetX = cx - (cx - offsetX) * ratio;
+      offsetY = cy - (cy - offsetY) * ratio;
+      scale *= ratio;
+      render(true);
+    }
+    lastPinchDist = dist;
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', () => { lastPinchDist = -1; });
+
+btnCrop.onclick = () => {
+  if (!img) return alert("Load image first");
+  render(false); 
+  canvas.toBlob(blob => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `tower-crop-${Date.now()}.jpg`;
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); render(true); }, 150);
+  }, 'image/jpeg', 0.95);
+};
+
+btnReset.onclick = () => { img = null; fileInput.value = ''; init(); };
+init();
+</script>
+</body>
+</html>
